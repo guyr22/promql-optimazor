@@ -1,7 +1,10 @@
 import os
-from typing import Dict, Union, Optional
+from typing import Dict, Any, Optional, Union
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class PromQLOptimizerAgent:
     """

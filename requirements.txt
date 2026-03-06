@@ -4,3 +4,4 @@ requests
 uvicorn
 google-genai
 prometheus-client
+python-dotenv

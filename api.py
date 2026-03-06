@@ -3,8 +3,11 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
 
 from query_optimizer import PromQLOptimizerAgent
+
+load_dotenv()
 
 app = FastAPI(
     title="PromQL Optimizer API",
