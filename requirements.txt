@@ -1,0 +1,6 @@
+fastapi
+pydantic
+requests
+uvicorn
+google-genai
+prometheus-client
