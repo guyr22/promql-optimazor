@@ -1,5 +1,6 @@
 import os
 import requests
+import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -8,6 +9,13 @@ from dotenv import load_dotenv
 from query_optimizer import PromQLOptimizerAgent
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("promql-optimizer")
 
 app = FastAPI(
     title="PromQL Optimizer API",
@@ -22,8 +30,9 @@ GRAFANA_API_KEY = os.getenv("GRAFANA_API_KEY")
 # Initialize the optimizer agent. Will look for RAG-CONTEXT.txt in the same directory.
 try:
     optimizer_agent = PromQLOptimizerAgent()
+    logger.info("Successfully initialized PromQLOptimizerAgent")
 except Exception as e:
-    print(f"Warning: Failed to initialize PromQLOptimizerAgent: {e}")
+    logger.error(f"Failed to initialize PromQLOptimizerAgent: {e}")
     optimizer_agent = None
 
 
@@ -46,7 +55,9 @@ class DashboardOptimizeResponse(BaseModel):
 
 def fetch_grafana_dashboard(uid: str) -> Dict[str, Any]:
     """Fetches the dashboard JSON payload from Grafana HTTP API."""
+    logger.info(f"Fetching Grafana dashboard with UID: {uid}")
     if not GRAFANA_API_KEY:
+        logger.error("GRAFANA_API_KEY environment variable is not set")
         raise ValueError("GRAFANA_API_KEY environment variable is not set")
         
     headers = {
@@ -55,9 +66,11 @@ def fetch_grafana_dashboard(uid: str) -> Dict[str, Any]:
     }
     url = f"{GRAFANA_URL.rstrip('/')}/api/dashboards/uid/{uid}"
     
+    logger.debug(f"Requesting Grafana API: {url}")
     response = requests.get(url, headers=headers)
     
     if response.status_code != 200:
+        logger.error(f"Failed to fetch dashboard. Status: {response.status_code}, Response: {response.text}")
         raise HTTPException(status_code=response.status_code, detail=f"Failed to fetch dashboard: {response.text}")
     
     return response.json()
@@ -93,16 +106,22 @@ def evaluate_promql(query: str, variables: Dict[str, Any]) -> tuple[str, int]:
     Substitutes Grafana variables and evaluates the query against Prometheus 
     to get actual latency and cardinality.
     """
+    logger.debug(f"Evaluating query against Prometheus: {query}")
     substituted_query = query
     # Very basic variable substitution for $var, ${var}, or [[var]]
-    for var_name, var_value in variables.items():
-        if isinstance(var_value, list):
-            val_str = "|".join(str(v) for v in var_value)
-        elif isinstance(var_value, dict) and "value" in var_value:
-             # handle complex grafana variable objects if passed
-             val_str = str(var_value["value"])
+    for var_name, var_obj in variables.items():
+        # Handle complex grafana variable objects (e.g. {'value': ['status'], 'is_multi': True})
+        val = var_obj.get("value") if isinstance(var_obj, dict) and "value" in var_obj else var_obj
+        
+        if isinstance(val, list):
+            if "$__all" in val or "all" in [str(v).lower() for v in val]:
+                val_str = ".*" # variable might have a regex, we dont consider it right now
+            else:
+                val_str = "|".join(str(v) for v in val)
+        elif str(val) == "$__all" or str(val).lower() == "all":
+            val_str = ".*"
         else:
-            val_str = str(var_value)
+            val_str = str(val)
             
         # Replace occurrences
         safe_val = val_str.replace("$", "$$") # escape for regex replacement if needed, though simple replace is easier
@@ -123,13 +142,16 @@ def evaluate_promql(query: str, variables: Dict[str, Any]) -> tuple[str, int]:
             data = response.json().get("data", {})
             results = data.get("result", [])
             cardinality = len(results)
+            logger.debug(f"Query evaluated successfully. Latency: {latency_str}, Cardinality: {cardinality}")
         else:
             cardinality = 0
             latency_str = f"Error {response.status_code}"
+            logger.error(f"Prometheus returned error {response.status_code}: {response.text}")
             
     except Exception as e:
         latency_str = f"Failed to execute: {str(e)}"
         cardinality = 0
+        logger.error(f"Exception during Prometheus evaluation: {e}")
 
     return latency_str, cardinality
 
@@ -144,10 +166,12 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
         if not expr:
             continue
             
+        logger.info(f"Processing query from panel '{panel_title}': {expr}")
         # Execute against Prometheus to get real performance metrics
         latency, cardinality = evaluate_promql(expr, variables)
         
         if optimizer_agent is None:
+            logger.error("Optimizer agent is not initialized.")
             optimizations.append(OptimizationResult(
                 panel_title=panel_title,
                 original_query=expr,
@@ -174,14 +198,17 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
                         explanation=explanation_val,
                         grade=result_dict.get('grade')
                     ))
+                    logger.info(f"Successfully generated optimization for query in '{panel_title}'.")
                 else:
                     optimizations.append(OptimizationResult(
                         panel_title=panel_title,
                         original_query=expr,
                         error="Optimizer returned no result."
                     ))
+                    logger.warning(f"Optimizer returned no result for query in '{panel_title}'.")
                     
             except Exception as e:
+                logger.error(f"Error optimizing query in '{panel_title}': {e}")
                 optimizations.append(OptimizationResult(
                     panel_title=panel_title,
                     original_query=expr,
@@ -195,15 +222,19 @@ async def optimize_dashboard(request: DashboardOptimizeRequest):
     Receives a Grafana dashboard UID, fetches its definition, parses out all PromQL queries,
     and runs them through the optimizer agent.
     """
+    logger.info(f"Received optimization request for dashboard UID: {request.dashboard_uid}")
     try:
         dashboard_data = fetch_grafana_dashboard(request.dashboard_uid)
     except ValueError as e:
+        logger.error(f"ValueError while processing request: {e}")
         raise HTTPException(status_code=500, detail=str(e))
         
     dashboard = dashboard_data.get("dashboard", {})
     dashboard_title = dashboard.get("title", "Unknown Dashboard")
     
+    logger.info(f"Loaded dashboard: '{dashboard_title}' ({request.dashboard_uid})")
     variables = extract_variables(dashboard_data)
+    logger.debug(f"Extracted variables: {variables}")
     optimizations = []
     
     panels = dashboard.get("panels", [])
@@ -216,6 +247,7 @@ async def optimize_dashboard(request: DashboardOptimizeRequest):
         else:
             process_panel(panel, variables, optimizations)
             
+    logger.info(f"Computed {len(optimizations)} optimizations for dashboard '{dashboard_title}'.")
     return DashboardOptimizeResponse(
         dashboard_title=dashboard_title,
         dashboard_uid=request.dashboard_uid,
