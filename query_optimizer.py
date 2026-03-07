@@ -12,7 +12,7 @@ class PromQLOptimizerAgent:
     Uses guidelines provided in a local RAG context file.
     """
 
-    def __init__(self, context_file_path: str = "RAG-CONTEXT.txt", model: str = "models/gemini-2.5-flash-lite"):
+    def __init__(self, context_file_path: str = "RAG-CONTEXT.txt", model: str = "gemini-2.5-flash"):
         """
         Initializes the optimizer agent.
         

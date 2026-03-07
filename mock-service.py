@@ -2,13 +2,13 @@ import time
 import random
 from prometheus_client import start_http_server, Counter
 
-# Define our 5 labels and their 5 unique values each
+# Define our 5 labels and their 7 unique values each
 LABELS = {
-    'method': ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    'endpoint': ['/api/v1/users', '/api/v1/login', '/api/v1/query', '/api/v1/metrics', '/health'],
-    'status': ['200', '201', '400', '401', '500'],
-    'tenant': ['t1', 't2', 't3', 't4', 't5'],
-    'region': ['us-east', 'us-west', 'eu-central', 'eu-west', 'ap-south']
+    'method': ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+    'endpoint': ['/api/v1/users', '/api/v1/login', '/api/v1/query', '/api/v1/metrics', '/health', '/api/v1/logout', '/api/v1/settings'],
+    'status': ['200', '201', '400', '401', '500', '403', '404'],
+    'tenant': ['t1', 't2', 't3', 't4', 't5', 't6', 't7'],
+    'region': ['us-east', 'us-west', 'eu-central', 'eu-west', 'ap-south', 'ap-east', 'sa-east']
 }
 
 # Create a single Counter metric with the 5 labels
@@ -59,7 +59,7 @@ def generate_traffic():
         time.sleep(random.uniform(0.01, 0.1))
 
 if __name__ == '__main__':
-    # Initialize all 3125 possible time series combinations to 0
+    # Initialize all 16807 possible time series combinations to 0
     # This ensures they exist in Prometheus immediately with a value of 0
     for method in LABELS['method']:
         for endpoint in LABELS['endpoint']:

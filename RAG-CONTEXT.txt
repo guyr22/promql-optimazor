@@ -30,6 +30,8 @@ Apply the following rules to identify flaws and suggest improvements:
   Never arbitrarily add new label filters (e.g. `method="DELETE"`) that the user did not originally include in their query. You do not know the user's intent or what subsets of data they need. If a query is inefficient due to missing filters, leave the query's matchers intact and use the explanation to suggest the user add more specific label filters.
 * Rule H: Metric Name is Mandatory
   A PromQL query MUST query a specific metric name (e.g. `mock_http_requests_total{label="val"}`). Querying only by bare labels (e.g. `{job="mock-service"}`) forces Prometheus to scan every single metric in the entire TSDB, which is extremely dangerous and inefficient. If you receive a query without a metric name, DO NOT attempt to change or optimize it. Instead, return the exact original query and use the explanation to state that querying without a metric name is inefficient and the user must provide one.
+* Rule I: Addressing High Cardinality from Variables
+  If the query execution results in high cardinality (e.g., > 10,000 series) and the query relies on multiple Grafana variables configured with the "All" option (`"include_all": true` or `"is_multi": true`), you MUST use the explanation to suggest that the user updates their Grafana dashboard variable configuration. Advise them to reduce the series count by disabling the "All" option, forcing more specific default selections, or adding more specific hardcoded label filters to the query instead.
 
 ## 4. Thanos-Specific Architecture Considerations
 Thanos introduces distributed querying and historical data. You must account for how Thanos fetches data:
