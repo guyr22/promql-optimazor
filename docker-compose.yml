@@ -56,8 +56,20 @@ services:
     command: >
       sh -c "pip install prometheus_client && python mock-service.py"
     restart: unless-stopped
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=YourStrong!Passw0rd
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    restart: unless-stopped
 
 volumes:
   grafana-storage:
   postgres-data:
   prometheus-data:
+  sqlserver-data:

@@ -1,12 +1,19 @@
 import os
-import requests
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Generator
 from dotenv import load_dotenv
 
-from query_optimizer import PromQLOptimizerAgent
+from optimizers import get_optimizer
+from models import DashboardOptimizeRequest, OptimizationResult, DashboardOptimizeResponse
+from grafana_client import (
+    fetch_grafana_dashboard,
+    extract_variables,
+    get_prometheus_url,
+    clear_datasource_cache,
+)
+from prometheus_client import evaluate_promql
 
 load_dotenv()
 
@@ -23,139 +30,17 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configuration for Grafana
-GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000")
-GRAFANA_API_KEY = os.getenv("GRAFANA_API_KEY")
-
-# Initialize the optimizer agent. Will look for RAG-CONTEXT.txt in the same directory.
+# Initialize the optimizer agent using the factory.
 try:
-    optimizer_agent = PromQLOptimizerAgent()
-    logger.info("Successfully initialized PromQLOptimizerAgent")
+    optimizer_type = os.getenv("OPTIMIZER_TYPE", "gemini")
+    optimizer_agent = get_optimizer(optimizer_type)
+    logger.info(f"Successfully initialized {optimizer_agent.__class__.__name__}")
 except Exception as e:
-    logger.error(f"Failed to initialize PromQLOptimizerAgent: {e}")
+    logger.error(f"Failed to initialize optimizer agent: {e}")
     optimizer_agent = None
 
 
-class DashboardOptimizeRequest(BaseModel):
-    dashboard_uid: str
-
-class OptimizationResult(BaseModel):
-    panel_title: str
-    original_query: str
-    optimized_query: Optional[str] = None
-    explanation: Optional[str] = None
-    grade: Optional[int] = None
-    error: Optional[str] = None
-
-class DashboardOptimizeResponse(BaseModel):
-    dashboard_title: str
-    dashboard_uid: str
-    optimizations: List[OptimizationResult]
-
-
-def fetch_grafana_dashboard(uid: str) -> Dict[str, Any]:
-    """Fetches the dashboard JSON payload from Grafana HTTP API."""
-    logger.info(f"Fetching Grafana dashboard with UID: {uid}")
-    if not GRAFANA_API_KEY:
-        logger.error("GRAFANA_API_KEY environment variable is not set")
-        raise ValueError("GRAFANA_API_KEY environment variable is not set")
-        
-    headers = {
-        "Authorization": f"Bearer {GRAFANA_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    url = f"{GRAFANA_URL.rstrip('/')}/api/dashboards/uid/{uid}"
-    
-    logger.debug(f"Requesting Grafana API: {url}")
-    response = requests.get(url, headers=headers)
-    
-    if response.status_code != 200:
-        logger.error(f"Failed to fetch dashboard. Status: {response.status_code}, Response: {response.text}")
-        raise HTTPException(status_code=response.status_code, detail=f"Failed to fetch dashboard: {response.text}")
-    
-    return response.json()
-
-
-def extract_variables(dashboard_json: Dict[str, Any]) -> Dict[str, Any]:
-    """Extracts dashboard variables and their current values."""
-    variables = {}
-    dashboard = dashboard_json.get("dashboard", {})
-    templating = dashboard.get("templating", {}).get("list", [])
-    
-    for var in templating:
-        name = var.get("name")
-        current_value = var.get("current", {}).get("value")
-        if name:
-            variables[name] = {
-                "value": current_value,
-                "is_multi": var.get("multi", False),
-                "include_all": var.get("includeAll", False)
-            }
-            
-    return variables
-
-
-import time
-import re
-
-# Configuration for Prometheus
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
-
-def evaluate_promql(query: str, variables: Dict[str, Any]) -> tuple[str, int]:
-    """
-    Substitutes Grafana variables and evaluates the query against Prometheus 
-    to get actual latency and cardinality.
-    """
-    logger.debug(f"Evaluating query against Prometheus: {query}")
-    substituted_query = query
-    # Very basic variable substitution for $var, ${var}, or [[var]]
-    for var_name, var_obj in variables.items():
-        # Handle complex grafana variable objects (e.g. {'value': ['status'], 'is_multi': True})
-        val = var_obj.get("value") if isinstance(var_obj, dict) and "value" in var_obj else var_obj
-        
-        if isinstance(val, list):
-            if "$__all" in val or "all" in [str(v).lower() for v in val]:
-                val_str = ".*" # variable might have a regex, we dont consider it right now
-            else:
-                val_str = "|".join(str(v) for v in val)
-        elif str(val) == "$__all" or str(val).lower() == "all":
-            val_str = ".*"
-        else:
-            val_str = str(val)
-            
-        # Replace occurrences
-        safe_val = val_str.replace("$", "$$") # escape for regex replacement if needed, though simple replace is easier
-        substituted_query = substituted_query.replace(f"${{{var_name}}}", val_str)
-        substituted_query = substituted_query.replace(f"${var_name}", val_str)
-        substituted_query = substituted_query.replace(f"[[{var_name}]]", val_str)
-
-    try:
-        url = f"{PROMETHEUS_URL.rstrip('/')}/api/v1/query"
-        start_time = time.time()
-        response = requests.get(url, params={"query": substituted_query}, timeout=10)
-        end_time = time.time()
-        
-        latency_secs = end_time - start_time
-        latency_str = f"{latency_secs:.3f}s"
-        
-        if response.status_code == 200:
-            data = response.json().get("data", {})
-            results = data.get("result", [])
-            cardinality = len(results)
-            logger.debug(f"Query evaluated successfully. Latency: {latency_str}, Cardinality: {cardinality}")
-        else:
-            cardinality = 0
-            latency_str = f"Error {response.status_code}"
-            logger.error(f"Prometheus returned error {response.status_code}: {response.text}")
-            
-    except Exception as e:
-        latency_str = f"Failed to execute: {str(e)}"
-        cardinality = 0
-        logger.error(f"Exception during Prometheus evaluation: {e}")
-
-    return latency_str, cardinality
-
-def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimizations: List[OptimizationResult]):
+def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimizations: List[OptimizationResult], time_range: str = "1h"):
     """Extracts queries from a single panel and sends them to the optimizer."""
     panel_title = panel.get("title", "Untitled Panel")
     targets = panel.get("targets", [])
@@ -165,16 +50,34 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
         expr = target.get("expr")
         if not expr:
             continue
-            
         logger.info(f"Processing query from panel '{panel_title}': {expr}")
+        
+        # Resolve the datasource for this target
+        datasource_ref = target.get("datasource")
+        prometheus_url = None
+        
+        if datasource_ref:
+            resolved_url = get_prometheus_url(datasource_ref, variables)
+            if resolved_url == "NOT_PROMETHEUS":
+                logger.info(f"Skipping non-Prometheus query in panel '{panel_title}'")
+                optimizations.append(OptimizationResult(
+                    panel_title=panel_title,
+                    original_query=expr,
+                    error="Skipped: datasource is not Prometheus."
+                ))
+                continue
+            prometheus_url = resolved_url  # May be None (fallback) or a direct URL
+        
         # Execute against Prometheus to get real performance metrics
-        latency, cardinality = evaluate_promql(expr, variables)
+        latency, cardinality = evaluate_promql(expr, variables, time_range, prometheus_url=prometheus_url)
         
         if optimizer_agent is None:
             logger.error("Optimizer agent is not initialized.")
             optimizations.append(OptimizationResult(
                 panel_title=panel_title,
                 original_query=expr,
+                original_latency=latency,
+                original_cardinality=cardinality,
                 error="Optimizer agent not initialized. Check server logs."
             ))
         else:
@@ -190,11 +93,32 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
                     explanation_val = result_dict.get('explanation')
                     if isinstance(explanation_val, list):
                         explanation_val = " ".join(str(x) for x in explanation_val)
+                    
+                    optimized_query = result_dict.get('optimized_query')
+                    opt_latency = None
+                    opt_cardinality = None
+                    
+                    # Re-evaluate both queries in parallel for a fair comparison
+                    if optimized_query and optimized_query != expr:
+                        logger.info(f"Evaluating original and optimized queries in parallel for panel '{panel_title}'")
+                        with ThreadPoolExecutor(max_workers=2) as executor:
+                            original_future = executor.submit(
+                                evaluate_promql, expr, variables, time_range, prometheus_url
+                            )
+                            optimized_future = executor.submit(
+                                evaluate_promql, optimized_query, variables, time_range, prometheus_url
+                            )
+                            latency, cardinality = original_future.result()
+                            opt_latency, opt_cardinality = optimized_future.result()
                         
                     optimizations.append(OptimizationResult(
                         panel_title=panel_title,
                         original_query=expr,
-                        optimized_query=result_dict.get('optimized_query'),
+                        original_latency=latency,
+                        original_cardinality=cardinality,
+                        optimized_query=optimized_query,
+                        optimized_latency=opt_latency,
+                        optimized_cardinality=opt_cardinality,
                         explanation=explanation_val,
                         grade=result_dict.get('grade')
                     ))
@@ -215,6 +139,26 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
                     error=f"Error during optimization: {str(e)}"
                 ))
 
+
+def get_panels_to_optimize(panels: List[Dict[str, Any]], count_limit: Optional[int]) -> Generator[Dict[str, Any], None, None]:
+    """Yields panels up to the optional count limit, unwrapping rows."""
+    has_limit = isinstance(count_limit, int) and count_limit > 0
+    processed_count: int = 0
+    
+    for panel in panels:
+        if has_limit and processed_count >= count_limit:  # type: ignore
+            break
+            
+        if panel.get("type") == "row":
+            sub_panels = panel.get("panels", [])
+            for sub_panel in sub_panels:
+                if has_limit and processed_count >= count_limit:  # type: ignore
+                    break
+                yield sub_panel
+                processed_count += 1  # type: ignore
+        else:
+            yield panel
+            processed_count += 1  # type: ignore
 
 @app.post("/optimize-dashboard", response_model=DashboardOptimizeResponse)
 async def optimize_dashboard(request: DashboardOptimizeRequest):
@@ -237,15 +181,13 @@ async def optimize_dashboard(request: DashboardOptimizeRequest):
     logger.debug(f"Extracted variables: {variables}")
     optimizations = []
     
+    # Clear datasource cache for each new request
+    clear_datasource_cache()
+    
     panels = dashboard.get("panels", [])
-    for panel in panels:
-        if panel.get("type") == "row":
-            # Rows contain nested panels
-            sub_panels = panel.get("panels", [])
-            for sub_panel in sub_panels:
-                process_panel(sub_panel, variables, optimizations)
-        else:
-            process_panel(panel, variables, optimizations)
+    
+    for panel in get_panels_to_optimize(panels, request.panels_count):
+        process_panel(panel, variables, optimizations, request.time_range)
             
     logger.info(f"Computed {len(optimizations)} optimizations for dashboard '{dashboard_title}'.")
     return DashboardOptimizeResponse(

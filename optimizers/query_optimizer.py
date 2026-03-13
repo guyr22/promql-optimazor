@@ -4,24 +4,27 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 
+from .base_optimizer import BasePromQLOptimizer
+
 load_dotenv()
 
-class PromQLOptimizerAgent:
+class PromQLOptimizerAgent(BasePromQLOptimizer):
     """
     An AI agent that acts as an expert PromQL and Thanos query optimizer.
-    Uses guidelines provided in a local RAG context file.
+    Uses guidelines provided in a local RAG context file and Gemini LLM.
+    Inherits from BasePromQLOptimizer.
     """
 
-    def __init__(self, context_file_path: str = "RAG-CONTEXT.txt", model: str = "gemini-2.5-flash"):
+    def __init__(self, context_file_path: str = "RAG-CONTEXT.txt", few_shots_path: str = "few_shots.json", model: str = "gemini-2.5-flash"):
         """
         Initializes the optimizer agent.
         
         Args:
             context_file_path (str): The path to the text file containing the RAG context.
+            few_shots_path (str): The path to the JSON file containing few-shot examples.
             model (str): The Gemini model to use.
         """
-        self.system_prompt = self._load_context(context_file_path)
-        self.model_name = model
+        super().__init__(context_file_path, few_shots_path, model)
         
         # Configure Gemini API
         api_key = os.getenv("GEMINI_API_KEY")
@@ -29,17 +32,6 @@ class PromQLOptimizerAgent:
             raise RuntimeError("Failed to initialize Gemini client. Ensure GEMINI_API_KEY environment variable is set.")
             
         self.client = genai.Client(api_key=api_key)
-
-    def _load_context(self, file_path: str) -> str:
-        """Loads the system prompt from the given file path."""
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Context file not found at {file_path}. Please modify the path or create the file.")
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return f.read().strip()
-        except Exception as e:
-            raise IOError(f"Error reading context file {file_path}: {e}")
 
     def optimize_query(
         self, 
@@ -60,27 +52,43 @@ class PromQLOptimizerAgent:
         Returns:
             Optional[Dict[str, str]]: A dictionary containing 'optimized_query' and 'explanation'.
         """
-        user_message = (
-            f"Please analyze and optimize the following PromQL/Thanos query based on the system guidelines.\n\n"
-            f"### Query Information\n"
-            f"- **Raw Query:** `{raw_query}`\n"
-            f"- **Execution Latency:** {latency}\n"
-            f"- **Series Cardinality:** {cardinality}\n"
-            f"- **Variable Context:** {variable_context}\n\n"
-            f"Provide a refactored, optimized version of the query. "
-            f"For the explanation, be extremely basic: state only what was changed and why. "
-            f"Keep each change and its explanation to a single sentence perfectly. "
-            f"Additionally, provide a 'grade' from 1 to 100 for the ORIGINAL query. "
-            f"The grade should be based on the severity and number of improvements needed (100 = perfect, 1 = extremely dangerous/inefficient). "
-            f"Return the response in a structured JSON format with THREE keys exactly: "
-            f"'optimized_query' (containing the refactored code), 'explanation' (containing your short analysis), and 'grade' (an integer)."
-        )
+        contents = []
+        import json
+
+        # Add few-shot examples to the context
+        for shot in self.few_shots:
+            shot_latency = shot.get("performance", {}).get("latency", "unknown")
+            shot_cardinality = shot.get("performance", {}).get("cardinality", 0)
+            
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part(text=self._format_user_message(
+                    shot["raw_query"], 
+                    shot["variable_context"], 
+                    shot_latency, 
+                    shot_cardinality
+                ))]
+            ))
+            contents.append(types.Content(
+                role="model",
+                parts=[types.Part(text=json.dumps({
+                    "optimized_query": shot["optimized_query"],
+                    "explanation": shot["explanation"],
+                    "grade": shot["grade"]
+                }))]
+            ))
+
+        # Add the actual user request
+        user_message = self._format_user_message(raw_query, variable_context, latency, cardinality)
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part(text=user_message)]
+        ))
 
         try:
-            import json
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=user_message,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=self.system_prompt,
                     temperature=0.2, # low temperature for more deterministic, analytical responses
