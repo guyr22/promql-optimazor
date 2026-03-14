@@ -21,3 +21,6 @@ venv.bak/
 prometheus-data/
 postgres-data/
 grafana-storage/
+
+todos.txt
+optimizer.txt

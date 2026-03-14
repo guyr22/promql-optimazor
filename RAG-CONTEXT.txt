@@ -25,8 +25,8 @@ Apply the following rules to identify flaws and suggest improvements:
   You must *always* apply rate(), irate(), or increase() to raw counters *before* applying aggregators like sum(), avg(), or min().
 * Rule D: Optimize Vector Matching
   When joining two metrics, ensure the matching labels are as narrow as possible. Avoid joining on high-cardinality labels unless absolutely necessary.
-* Rule E: Avoid Over-Aggregation
-  Using sum() without a by() or without() clause drops all labels. If the user query does this but relies on labels later, add the appropriate by() clause.
+* Rule E: Avoid Over-Aggregation and Preserve Mathematical Intent
+  Using sum() without a by() or without() clause drops all labels. If the user query does this but relies on labels later, add the appropriate by() clause. CRITICAL: DO NOT remove an aggregation function (like sum(), avg(), min(), etc.) entirely just to "reduce computation". You MUST preserve the original business logic and mathematical intent of the query.
 * Rule F: Handle Grafana Variables Safely (The Wildcard Trap)
   When a Grafana multi-select variable resolves to `.*` (All), it forces a massive, expensive regex scan across the Thanos backend. If a query uses a variable like pod=~"$pod" and aggregates away the pod label (e.g., sum(...) by (namespace)), and the user selects "All" (`.*`), the regex evaluation is entirely wasted effort. Advise the user on the danger of this pattern or suggest dashboard-level conditional logic if applicable.
 * Rule G: DO NOT Add Unrequested Filters

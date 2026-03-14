@@ -7,21 +7,25 @@
       "cardinality": 50000
     },
     "optimized_query": "rate(cpu_usage_over_time{}[5m])",
-    "explanation": "The query lacks bounding labels which causes global index scans on an unbounded selector. Suggest adding label filtering such as cluster or namespace.",
+    "explanation": "The query lacks bounding labels which causes global index scans on an unbounded selector. Suggest adding heavy label filtering to significantly reduce the queried series count.",
     "grade": 10
   },
   {
-    "raw_query": "rate(sum by (job) (http_requests_total{cluster=\"A\"})[5m])",
+    "raw_query": "rate(sum by (job) (http_requests_total{cluster=\"$cluster\"})[5m])",
     "variable_context": {
-      "cluster": "A"
+      "cluster": {
+        "value": "A",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "2.1s",
       "cardinality": 1500
     },
-    "optimized_query": "sum by (job) (rate(http_requests_total{cluster=\"A\"}[5m]))",
+    "optimized_query": "sum by (job) (rate(http_requests_total{cluster=\"$cluster\"}[5m]))",
     "explanation": "Applied rate() before sum aggregation to preserve counter reset logic and prevent data spikes.",
-    "grade": 40
+    "grade": 50
   },
   {
     "raw_query": "histogram_quantile(0.99, rate(sum(http_request_duration_seconds_bucket)[5m]))",
@@ -31,21 +35,25 @@
       "cardinality": 8000
     },
     "optimized_query": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
-    "explanation": "Included the 'le' label in the aggregation to ensure correct quantile interpolation. Suggest adding a bounding filter like job.",
-    "grade": 40
+    "explanation": "Included the 'le' label in the aggregation to ensure correct quantile interpolation. Suggest adding more label filtering to reduce the dataset size.",
+    "grade": 50
   },
   {
-    "raw_query": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"billing\"}[1h]))",
+    "raw_query": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"$namespace\"}[1h]))",
     "variable_context": {
-      "namespace": "billing"
+      "namespace": {
+        "value": "billing",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "18.2s",
       "cardinality": 12000
     },
-    "optimized_query": "sum by (deployment, namespace) (rate(container_cpu_usage_seconds_total{namespace=\"billing\"}[1h]))",
+    "optimized_query": "sum by (deployment, namespace) (rate(container_cpu_usage_seconds_total{namespace=\"$namespace\"}[1h]))",
     "explanation": "Replaced ephemeral 'pod' label with a more stable 'deployment' label to reduce memory bloat and fragmentation.",
-    "grade": 20
+    "grade": 40
   },
   {
     "raw_query": "sum(rate(node_cpu_seconds_total{instance=\"10.24.5.66:9100\"}[5m]))",
@@ -55,8 +63,8 @@
       "cardinality": 5000
     },
     "optimized_query": "sum(rate(node_cpu_seconds_total{instance=\"10.24.5.66:9100\"}[5m]))",
-    "explanation": "Suggest adding hierarchical bounding labels (e.g., job, cluster) to focus the search and avoid an exhaustive index scan.",
-    "grade": 15
+    "explanation": "Suggest adding hierarchical bounding labels to focus the search and avoid an exhaustive index scan.",
+    "grade": 60
   },
   {
     "raw_query": "kube_pod_status_ready * kube_pod_labels",
@@ -67,7 +75,7 @@
     },
     "optimized_query": "kube_pod_status_ready * on(pod, namespace) group_left(label_team) kube_pod_labels",
     "explanation": "Introduced explicit vector matching with 'on' and 'group_left' to handle many-to-many join complexity.",
-    "grade": 20
+    "grade": 25
   },
   {
     "raw_query": "up{region=\"eu\"} or up{region=\"us\"}",
@@ -81,61 +89,81 @@
     "grade": 85
   },
   {
-    "raw_query": "max_over_time(rate(http_requests_total{job=\"backend\"}[5m])[30d:1m])",
+    "raw_query": "max_over_time(rate(http_requests_total{job=\"$job\"}[5m])[30d:1m])",
     "variable_context": {
-      "job": "backend"
+      "job": {
+        "value": "backend",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "45s",
       "cardinality": 500
     },
-    "optimized_query": "max_over_time(rate(http_requests_total{job=\"backend\"}[5m])[30d:1h])",
+    "optimized_query": "max_over_time(rate(http_requests_total{job=\"$job\"}[5m])[30d:1h])",
     "explanation": "Increased the subquery resolution step from 1m to 1h to reduce the computational load for a 30-day range.",
-    "grade": 25
+    "grade": 35
   },
   {
-    "raw_query": "topk(5, rate(http_requests_total{cluster=\"prod\"}[1h]))",
+    "raw_query": "topk(5, rate(http_requests_total{cluster=\"$cluster\"}[1h]))",
     "variable_context": {
-      "cluster": "prod"
+      "cluster": {
+        "value": "prod",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "8.2s",
       "cardinality": 5000
     },
-    "optimized_query": "max by (service) (rate(http_requests_total{cluster=\"prod\"}[1h]))",
-    "explanation": "Replaced topk() with max by (service) to avoid series swapping and fragmentation in the dashboard graph.",
+    "optimized_query": "topk(5, sum by (service) (rate(http_requests_total{cluster=\"$cluster\"}[1h])))",
+    "explanation": "If this query is used in a time-series graph, topk() can cause series swapping and visually fragmented lines. Suggest changing the aggregation to 'sum by (service)' and handling the top 5 sorting on the dashboard frontend instead.",
     "grade": 70
   },
   {
-    "raw_query": "absent(up{job=\"api\", instance=~\".*\"})",
+    "raw_query": "absent(up{job=\"$job\", instance=~\".*\"})",
     "variable_context": {
-      "job": "api"
+      "job": {
+        "value": "api",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "12s",
       "cardinality": 50000
     },
-    "optimized_query": "up{job=\"api\"} offset 1h unless up{job=\"api\"}",
+    "optimized_query": "up{job=\"$job\"} offset 1h unless up{job=\"$job\"}",
     "explanation": "Converted dynamic absent() check to a historical offset comparison to avoid global index scans.",
-    "grade": 10
+    "grade": 15
   },
   {
-    "raw_query": "sum(sort_desc(rate(http_requests_total{cluster=\"prod\"}[5m]))) by (job)",
+    "raw_query": "sum(sort_desc(rate(http_requests_total{cluster=\"$cluster\"}[5m]))) by (job)",
     "variable_context": {
-      "cluster": "prod"
+      "cluster": {
+        "value": "prod",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "2.1s",
       "cardinality": 1000
     },
-    "optimized_query": "sum by (job) (rate(http_requests_total{cluster=\"prod\"}[5m]))",
+    "optimized_query": "sum by (job) (rate(http_requests_total{cluster=\"$cluster\"}[5m]))",
     "explanation": "Removed redundant internal sorting function which is unnecessary before final aggregation.",
     "grade": 100
   },
   {
     "raw_query": "rate(http_requests_total{job=~\"$job\"}[$__interval])",
     "variable_context": {
-      "job": "auth-service"
+      "job": {
+        "value": "auth-service",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "3.4s",
@@ -143,57 +171,56 @@
     },
     "optimized_query": "rate(http_requests_total{job=~\"$job\"}[$__rate_interval])",
     "explanation": "Replaced $__interval with $__rate_interval to ensure enough data points are captured for the rate calculation.",
-    "grade": 50
+    "grade": 70
   },
   {
     "raw_query": "sum(rate(http_requests_total{pod=~\"$pod\"}[5m]))",
     "variable_context": {
-      "pod": ".*"
+      "pod": {
+        "value": ["$__all"],
+        "is_multi": true,
+        "include_all": true
+      }
     },
     "performance": {
       "latency": "35s",
       "cardinality": 150000
     },
     "optimized_query": "sum(rate(http_requests_total{pod=~\"$pod\"}[5m]))",
-    "explanation": "The query uses an unbounded 'All' variable. Suggest adding low-cardinality bounds (e.g., cluster, namespace) to bound the query.",
+    "explanation": "The query uses an unbounded 'All' variable which caused an extremely high cardinality. This is memory-intensive and dangerous for the backend. Suggest adding heavy label filtering to bound the query.",
     "grade": 5
   },
   {
-    "raw_query": "sum(rate(errors_total{job=~\".*\", status=~\"5..\"}[5m]))",
+    "raw_query": "sum(rate(errors_total{job=~\"$job\", status=~\"5..\"}[5m]))",
     "variable_context": {
-      "job": "api-gateway"
+      "job": {
+        "value": "api-gateway",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "22.1s",
       "cardinality": 15000
     },
-    "optimized_query": "sum(rate(errors_total{job=\"api-gateway\", status=~\"500|502|503|504\"}[5m]))",
+    "optimized_query": "sum(rate(errors_total{job=\"$job\", status=~\"500|502|503|504\"}[5m]))",
     "explanation": "Replaced broad regex matchers with exact matches and specific status codes to optimize query performance.",
     "grade": 20
   },
   {
-    "raw_query": "label_values(http_requests_total{job=\"api\"}, pod_name)",
+    "raw_query": "sum by (app) (label_replace(rate(http_requests_total{env=\"$env\"}[5m]), \"app\", \"$1\", \"job\", \"(.*)\"))",
     "variable_context": {
-      "job": "api"
-    },
-    "performance": {
-      "latency": "5s",
-      "cardinality": 500
-    },
-    "optimized_query": "label_values(pod_name)",
-    "explanation": "Simplified label_values lookup to a faster index-only query by removing the metric name and filter.",
-    "grade": 85
-  },
-  {
-    "raw_query": "sum by (app) (label_replace(rate(http_requests_total{env=\"prod\"}[5m]), \"app\", \"$1\", \"job\", \"(.*)\"))",
-    "variable_context": {
-      "env": "prod"
+      "env": {
+        "value": "prod",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "10.5s",
       "cardinality": 2500
     },
-    "optimized_query": "label_replace(sum by (job) (rate(http_requests_total{env=\"prod\"}[5m])), \"app\", \"$1\", \"job\", \"(.*)\")",
+    "optimized_query": "label_replace(sum by (job) (rate(http_requests_total{env=\"$env\"}[5m])), \"app\", \"$1\", \"job\", \"(.*)\")",
     "explanation": "Moved label_replace() outside the aggregation to reduce the number of string manipulations.",
     "grade": 70
   },
@@ -206,7 +233,7 @@
     },
     "optimized_query": "rate(http_requests_total{method=\"GET\"}[5m]) + rate(http_requests_total{method=\"POST\"}[5m])",
     "explanation": "Separated rate calculations to preserve independent counter reset logic for each series.",
-    "grade": 40
+    "grade": 60
   },
   {
     "raw_query": "absent(kube_pod_status_ready{condition=\"true\", pod=~\"frontend-.*\"})",
@@ -217,7 +244,7 @@
     },
     "optimized_query": "kube_pod_status_ready{condition=\"true\", deployment=\"frontend\"} offset 5m unless kube_pod_status_ready{condition=\"true\", deployment=\"frontend\"}",
     "explanation": "Converted dynamic absent() check on ephemeral pods to a historical comparison using a stable deployment label.",
-    "grade": 20
+    "grade": 30
   },
   {
     "raw_query": "sum by (pod) (rate(container_cpu_usage_seconds_total[5m])) * kube_pod_info",
@@ -227,34 +254,42 @@
       "cardinality": 60000
     },
     "optimized_query": "sum by (pod) (rate(container_cpu_usage_seconds_total[5m])) * on(pod) group_left(node) kube_pod_info",
-    "explanation": "Optimized the hash table signature with specific labels (on, group_left). Also suggest bounding the queries with labels like cluster to reduce cardinality.",
-    "grade": 10
+    "explanation": "Optimized the hash table signature with specific labels (on, group_left). Also suggest adding heavy label filtering to reduce cardinality and stabilize the query.",
+    "grade": 20
   },
   {
-    "raw_query": "histogram_quantile(0.95, rate(sum by (service) (http_request_duration_seconds_bucket{env=\"prod\"})[10m]))",
+    "raw_query": "histogram_quantile(0.95, rate(sum by (service) (http_request_duration_seconds_bucket{env=\"$env\"})[10m]))",
     "variable_context": {
-      "env": "prod"
+      "env": {
+        "value": "prod",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "14.2s",
       "cardinality": 9000
     },
-    "optimized_query": "histogram_quantile(0.95, sum by (le, service) (rate(http_request_duration_seconds_bucket{env=\"prod\"}[10m])))",
+    "optimized_query": "histogram_quantile(0.95, sum by (le, service) (rate(http_request_duration_seconds_bucket{env=\"$env\"}[10m])))",
     "explanation": "Corrected the aggregation to include the mandatory 'le' label for histogram quantile interpolation.",
-    "grade": 30
+    "grade": 40
   },
   {
     "raw_query": "rate(api_requests_total{handler=\"$handler\"}[$__interval])",
     "variable_context": {
-      "handler": "v1|v2"
+      "handler": {
+        "value": "v1|v2",
+        "is_multi": true,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "2.5s",
       "cardinality": 800
     },
     "optimized_query": "rate(api_requests_total{handler=~\"$handler\"}[$__rate_interval])",
-    "explanation": "Enforced the regex operator for a multi-value variable and padded the temporal window with $__rate_interval. Suggest adding bounding labels like cluster.",
-    "grade": 50
+    "explanation": "Enforced the regex operator for a multi-value variable and padded the temporal window with $__rate_interval. Suggest adding more label filtering to reduce the dataset.",
+    "grade": 70
   },
   {
     "raw_query": "avg_over_time(sum by (job) (rate(http_requests_total[5m]))[7d:1m])",
@@ -264,7 +299,7 @@
       "cardinality": 1000
     },
     "optimized_query": "avg_over_time(sum by (job) (rate(http_requests_total[5m]))[7d:1h])",
-    "explanation": "Widened the subquery resolution step from 1m to 1h to prevent computational explosion over a 7-day period. Suggest adding bounding labels to the inner query.",
+    "explanation": "Widened the subquery resolution step from 1m to 1h to prevent computational explosion over a 7-day period. Suggest adding more label filtering to the inner query.",
     "grade": 25
   },
   {
@@ -286,7 +321,7 @@
       "cardinality": 80000
     },
     "optimized_query": "sum(rate(http_requests_total{pod_name!~\"test-.*\"}[5m]))",
-    "explanation": "Suggest adding a bounding low-cardinality label (e.g., namespace) to optimize the expensive negative regex dictionary scan.",
+    "explanation": "Suggest adding heavy label filtering to optimize the expensive negative regex dictionary scan.",
     "grade": 10
   },
   {
@@ -297,46 +332,102 @@
       "cardinality": 120000
     },
     "optimized_query": "rate(http_requests_total{status=\"500\"}[5m]) / ignoring(status) group_left rate(http_requests_total[5m])",
-    "explanation": "Suggest adding bounding constraints (e.g., cluster) to reduce the memory-heavy hash table needed for the self-join.",
+    "explanation": "Suggest adding heavy label filtering to reduce the memory-heavy hash table needed for the self-join.",
     "grade": 5
   },
   {
-    "raw_query": "rate(container_cpu_usage_seconds_total{env=\"prod\"}[5m]) > 0.8 and on(pod) kube_pod_status_ready{condition=\"false\"}",
+    "raw_query": "rate(container_cpu_usage_seconds_total{env=\"$env\"}[5m]) > 0.8 and on(pod) kube_pod_status_ready{condition=\"false\"}",
     "variable_context": {
-      "env": "prod"
+      "env": {
+        "value": "prod",
+        "is_multi": false,
+        "include_all": false
+      }
     },
     "performance": {
       "latency": "18.9s",
       "cardinality": 20000
     },
-    "optimized_query": "sum by (deployment) (rate(container_cpu_usage_seconds_total{env=\"prod\"}[5m])) > 0.8 and on(deployment) max by (deployment) (kube_pod_status_ready{condition=\"false\"})",
+    "optimized_query": "sum by (deployment) (rate(container_cpu_usage_seconds_total{env=\"$env\"}[5m])) > 0.8 and on(deployment) max by (deployment) (kube_pod_status_ready{condition=\"false\"})",
     "explanation": "Aggregated by deployment instead of pod to avoid cardinality spikes from ephemeral pod churn in set operations.",
-    "grade": 20
+    "grade": 40
   },
   {
     "raw_query": "sum by (service) (increase(http_requests_total{job=~\"$job\"}[$__interval]))",
     "variable_context": {
-      "job": "all"
+      "job": {
+        "value": ["all"],
+        "is_multi": true,
+        "include_all": true
+      }
     },
     "performance": {
       "latency": "12.4s",
       "cardinality": 15000
     },
     "optimized_query": "sum by (service) (increase(http_requests_total{job=~\"$job\"}[$__rate_interval]))",
-    "explanation": "Replaced $__interval with $__rate_interval to ensure accurate data capture. Suggest adding a cluster filter to improve performance.",
-    "grade": 20
+    "explanation": "Replaced $__interval with $__rate_interval to ensure accurate data capture. Suggest adding heavy label filtering to improve performance.",
+    "grade": 30
   },
   {
     "raw_query": "sum by (instance) (rate(node_network_receive_bytes_total{instance=~\"$instance\"}[5m]))",
     "variable_context": {
-      "instance": ".*"
+      "instance": {
+        "value": ["$__all"],
+        "is_multi": true,
+        "include_all": true
+      }
     },
     "performance": {
       "latency": "42.5s",
       "cardinality": 250000
     },
     "optimized_query": "sum by (instance) (rate(node_network_receive_bytes_total{instance=~\"$instance\"}[5m]))",
-    "explanation": "Suggest applying a cluster boundary to prevent the query from scanning every instance in the global infrastructure.",
+    "explanation": "This query scans an extremely high number of series (cardinality 250,000) because the $instance variable resolves to '.+'. This is memory-intensive and dangerous for the backend. Suggest adding heavy label filtering to significantly reduce the queried series count before the rate computation.",
     "grade": 5
+  },
+  {
+    "raw_query": "sum(delta(total_produced_alerts_total{job=\"shilat\", operator=~\"$operator\", application=~\"$application\"}[$__range]))",
+    "variable_context": {
+      "operator": {
+        "value": ["$__all"],
+        "is_multi": true,
+        "include_all": true
+      },
+      "application": {
+        "value": ["$__all"],
+        "is_multi": true,
+        "include_all": true
+      }
+    },
+    "performance": {
+      "latency": "5s",
+      "cardinality": 5000
+    },
+    "optimized_query": "sum(increase(total_produced_alerts_total{job=\"shilat\", operator=~\"$operator\", application=~\"$application\"}[$__range]))",
+    "explanation": "Replaced delta() with increase() to correctly handle counter resets for the _total metric. Preserved the sum() aggregation to maintain the query's mathematical intent. Suggest adding bounding labels if cardinality increases.",
+    "grade": 80
+  },
+  {
+    "raw_query": "scalar(no_of_keys{job=\"$environment\", instance=\"$instance\"})",
+    "variable_context": {
+      "environment": {
+        "value": "prod",
+        "is_multi": false,
+        "include_all": false
+      },
+      "instance": {
+        "value": "server-1",
+        "is_multi": false,
+        "include_all": false
+      }
+    },
+    "performance": {
+      "latency": "0.1s",
+      "cardinality": 1
+    },
+    "optimized_query": "no_of_keys{job=\"$environment\", instance=\"$instance\"}",
+    "explanation": "Removed the redundant scalar() function. When a vector already returns a single element (as ensured by exact matchers on single-valued variables), it can be used directly in arithmetic operations without forced scalar conversion.",
+    "grade": 80
   }
 ]

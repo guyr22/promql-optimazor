@@ -46,15 +46,17 @@ class BasePromQLOptimizer(ABC):
         except Exception as e:
             raise IOError(f"Error reading context file {file_path}: {e}")
 
-    def _format_user_message(self, raw_query: str, variable_context: Any, latency: Any, cardinality: Any) -> str:
+    def _format_user_message(self, raw_query: str, variable_context: Any, latency: Any, cardinality: Any, panel_description: str = "") -> str:
         """Formats the input data into the user message string."""
+        desc_line = f"- **Panel Description:** {panel_description}\n" if panel_description else ""
         return (
             f"Please analyze and optimize the following PromQL/Thanos query based on the system guidelines.\n\n"
             f"### Query Information\n"
             f"- **Raw Query:** `{raw_query}`\n"
             f"- **Execution Latency:** {latency}\n"
             f"- **Series Cardinality:** {cardinality}\n"
-            f"- **Variable Context:** {variable_context}\n\n"
+            f"- **Variable Context:** {variable_context}\n"
+            f"{desc_line}\n"
             f"Provide a refactored, optimized version of the query. "
             f"For the explanation, be extremely basic: state only what was changed and why. "
             f"Keep each change and its explanation to a single sentence perfectly. "
@@ -70,7 +72,8 @@ class BasePromQLOptimizer(ABC):
         raw_query: str, 
         variable_context: Union[Dict, str], 
         latency: Union[str, float], 
-        cardinality: int
+        cardinality: int,
+        panel_description: str = ""
     ) -> Optional[Dict[str, str]]:
         """
         Analyzes and optimizes a PromQL/Thanos query based on execution telemetry and dashboard context.

@@ -43,6 +43,7 @@ except Exception as e:
 def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimizations: List[OptimizationResult], time_range: str = "1h"):
     """Extracts queries from a single panel and sends them to the optimizer."""
     panel_title = panel.get("title", "Untitled Panel")
+    panel_description = panel.get("description", "")
     targets = panel.get("targets", [])
     
     for target in targets:
@@ -86,7 +87,8 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
                     raw_query=expr,
                     variable_context=variables,
                     latency=latency,
-                    cardinality=cardinality
+                    cardinality=cardinality,
+                    panel_description=panel_description
                 )
                 
                 if result_dict:

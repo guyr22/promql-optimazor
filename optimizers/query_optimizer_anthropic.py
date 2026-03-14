@@ -38,7 +38,8 @@ class PromQLOptimizerAnthropicAgent(BasePromQLOptimizer):
         raw_query: str, 
         variable_context: Union[Dict, str], 
         latency: Union[str, float], 
-        cardinality: int
+        cardinality: int,
+        panel_description: str = ""
     ) -> Optional[Dict[str, str]]:
         """
         Analyzes and optimizes a PromQL/Thanos query based on execution telemetry and dashboard context.
@@ -65,7 +66,8 @@ class PromQLOptimizerAnthropicAgent(BasePromQLOptimizer):
                     shot["raw_query"], 
                     shot["variable_context"], 
                     shot_latency, 
-                    shot_cardinality
+                    shot_cardinality,
+                    shot.get("panel_description", "")
                 )
             })
             messages.append({
@@ -78,7 +80,7 @@ class PromQLOptimizerAnthropicAgent(BasePromQLOptimizer):
             })
 
         # Add the actual user request
-        user_message = self._format_user_message(raw_query, variable_context, latency, cardinality)
+        user_message = self._format_user_message(raw_query, variable_context, latency, cardinality, panel_description)
         messages.append({"role": "user", "content": user_message})
 
         try:
@@ -91,7 +93,13 @@ class PromQLOptimizerAnthropicAgent(BasePromQLOptimizer):
             )
             
             # Extract JSON from the response text
-            return json.loads(response.content[0].text)
+            import re
+            response_text = response.content[0].text
+            
+            # Remove <think>...</think> tags which Anthropic might return
+            response_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL).strip()
+            
+            return json.loads(response_text)
         except Exception as e:
             print(f"Error during Anthropic API call: {e}")
             return None

@@ -40,7 +40,8 @@ class PromQLOptimizerOpenAIAgent(BasePromQLOptimizer):
         raw_query: str, 
         variable_context: Union[Dict, str], 
         latency: Union[str, float], 
-        cardinality: int
+        cardinality: int,
+        panel_description: str = ""
     ) -> Optional[Dict[str, str]]:
         """
         Analyzes and optimizes a PromQL/Thanos query based on execution telemetry and dashboard context.
@@ -69,7 +70,8 @@ class PromQLOptimizerOpenAIAgent(BasePromQLOptimizer):
                     shot["raw_query"], 
                     shot["variable_context"], 
                     shot_latency, 
-                    shot_cardinality
+                    shot_cardinality,
+                    shot.get("panel_description", "")
                 )
             })
             messages.append({
@@ -82,7 +84,7 @@ class PromQLOptimizerOpenAIAgent(BasePromQLOptimizer):
             })
 
         # Add the actual user request
-        user_message = self._format_user_message(raw_query, variable_context, latency, cardinality)
+        user_message = self._format_user_message(raw_query, variable_context, latency, cardinality, panel_description)
         messages.append({"role": "user", "content": user_message})
 
         try:

@@ -1,6 +1,0 @@
-stop sending cardinality and latency to the LLM?
-get label values and inject it with pipes for $__all
-[x] datasource url and datasource variable
-[x] $__range in query
-[x] run both queries parallely after optimization
-attach the panel description to the context
