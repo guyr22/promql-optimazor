@@ -18,8 +18,11 @@ class OptimizationResult(BaseModel):
     explanation: Optional[str] = None
     grade: Optional[int] = None
     error: Optional[str] = None
+    recommendation: Optional[List[str]] = None
 
 class DashboardOptimizeResponse(BaseModel):
     dashboard_title: str
     dashboard_uid: str
     optimizations: List[OptimizationResult]
+    dashboard_recommendations: Optional[List[str]] = None
+

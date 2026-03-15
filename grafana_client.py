@@ -156,4 +156,4 @@ def get_prometheus_url(datasource_ref: Any, variables: Dict[str, Any]) -> Option
         return "NOT_PROMETHEUS"
 
     logger.info(f"Datasource '{uid}' confirmed as prometheus type.")
-    return None
+    return ds_info.get("url")

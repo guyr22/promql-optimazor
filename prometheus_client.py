@@ -6,9 +6,6 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger("promql-optimizer")
 
-# Configuration for Prometheus (fallback if datasource resolution fails)
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
-
 
 def evaluate_promql(query: str, variables: Dict[str, Any], time_range: str = "1h", prometheus_url: Optional[str] = None) -> tuple[Optional[str], int]:
     """
@@ -25,7 +22,7 @@ def evaluate_promql(query: str, variables: Dict[str, Any], time_range: str = "1h
     Returns:
         A tuple of (latency_str, cardinality). latency_str is None if the query fails.
     """
-    eval_url = prometheus_url or f"{PROMETHEUS_URL.rstrip('/')}/api/v1/query"
+    eval_url = f"{prometheus_url}/api/v1/query"
     logger.debug(f"Evaluating query against Prometheus ({eval_url}): {query}")
     
     substituted_query = query

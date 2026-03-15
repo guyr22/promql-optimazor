@@ -14,6 +14,8 @@ from grafana_client import (
     clear_datasource_cache,
 )
 from prometheus_client import evaluate_promql
+from rules.dashboard_pipeline import run_dashboard_pipeline
+from rules.query_pipeline import run_query_pipeline
 
 load_dotenv()
 
@@ -40,8 +42,9 @@ except Exception as e:
     optimizer_agent = None
 
 
-def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimizations: List[OptimizationResult], time_range: str = "1h"):
+def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], time_range: str = "1h") -> List[OptimizationResult]:
     """Extracts queries from a single panel and sends them to the optimizer."""
+    panel_results = []
     panel_title = panel.get("title", "Untitled Panel")
     panel_description = panel.get("description", "")
     targets = panel.get("targets", [])
@@ -51,17 +54,24 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
         expr = target.get("expr")
         if not expr:
             continue
+        
         logger.info(f"Processing query from panel '{panel_title}': {expr}")
         
+        # Run the query rule pipeline
+        query_findings = run_query_pipeline(expr)
+        recommendations = [f.why for f in query_findings]
+        if recommendations:
+            logger.info(f"Rule pipeline found {len(recommendations)} issues in query.")
+        
         # Resolve the datasource for this target
-        datasource_ref = target.get("datasource")
+        datasource_ref = target.get("datasource", panel.get("datasource"))
         prometheus_url = None
         
         if datasource_ref:
             resolved_url = get_prometheus_url(datasource_ref, variables)
             if resolved_url == "NOT_PROMETHEUS":
                 logger.info(f"Skipping non-Prometheus query in panel '{panel_title}'")
-                optimizations.append(OptimizationResult(
+                panel_results.append(OptimizationResult(
                     panel_title=panel_title,
                     original_query=expr,
                     error="Skipped: datasource is not Prometheus."
@@ -72,9 +82,22 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
         # Execute against Prometheus to get real performance metrics
         latency, cardinality = evaluate_promql(expr, variables, time_range, prometheus_url=prometheus_url)
         
+        if cardinality == 0:
+            logger.info(f"Skipping optimization for panel '{panel_title}': cardinality is 0.")
+            panel_results.append(OptimizationResult(
+                panel_title=panel_title,
+                original_query=expr,
+                original_latency=latency,
+                original_cardinality=cardinality,
+                explanation="Query returned no data (0 cardinality). Skipping optimization as there is no performance impact to improve.",
+                grade=10,
+                recommendation=recommendations if recommendations else ["no recommendations"]
+            ))
+            continue
+
         if optimizer_agent is None:
             logger.error("Optimizer agent is not initialized.")
-            optimizations.append(OptimizationResult(
+            panel_results.append(OptimizationResult(
                 panel_title=panel_title,
                 original_query=expr,
                 original_latency=latency,
@@ -113,7 +136,7 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
                             latency, cardinality = original_future.result()
                             opt_latency, opt_cardinality = optimized_future.result()
                         
-                    optimizations.append(OptimizationResult(
+                    panel_results.append(OptimizationResult(
                         panel_title=panel_title,
                         original_query=expr,
                         original_latency=latency,
@@ -122,24 +145,28 @@ def process_panel(panel: Dict[str, Any], variables: Dict[str, Any], optimization
                         optimized_latency=opt_latency,
                         optimized_cardinality=opt_cardinality,
                         explanation=explanation_val,
-                        grade=result_dict.get('grade')
+                        grade=result_dict.get('grade'),
+                        recommendation=recommendations if recommendations else ["no recommendations"]
                     ))
                     logger.info(f"Successfully generated optimization for query in '{panel_title}'.")
                 else:
-                    optimizations.append(OptimizationResult(
+                    panel_results.append(OptimizationResult(
                         panel_title=panel_title,
                         original_query=expr,
+                        recommendation=recommendations if recommendations else ["no recommendations"],
                         error="Optimizer returned no result."
                     ))
                     logger.warning(f"Optimizer returned no result for query in '{panel_title}'.")
                     
             except Exception as e:
                 logger.error(f"Error optimizing query in '{panel_title}': {e}")
-                optimizations.append(OptimizationResult(
+                panel_results.append(OptimizationResult(
                     panel_title=panel_title,
                     original_query=expr,
+                    recommendation=recommendations if recommendations else ["no recommendations"],
                     error=f"Error during optimization: {str(e)}"
                 ))
+    return panel_results
 
 
 def get_panels_to_optimize(panels: List[Dict[str, Any]], count_limit: Optional[int]) -> Generator[Dict[str, Any], None, None]:
@@ -181,21 +208,44 @@ async def optimize_dashboard(request: DashboardOptimizeRequest):
     logger.info(f"Loaded dashboard: '{dashboard_title}' ({request.dashboard_uid})")
     variables = extract_variables(dashboard_data)
     logger.debug(f"Extracted variables: {variables}")
+    
+    # Run dashboard rule pipeline
+    dashboard_findings = run_dashboard_pipeline(dashboard)
+    dashboard_recommendations = [f.why for f in dashboard_findings]
+    if dashboard_recommendations:
+        logger.info(f"Dashboard rule pipeline found {len(dashboard_recommendations)} issues.")
+    else:
+        dashboard_recommendations = ["no recommendations"]
+        
     optimizations = []
     
     # Clear datasource cache for each new request
     clear_datasource_cache()
     
-    panels = dashboard.get("panels", [])
+    panels_to_optimize = list(get_panels_to_optimize(dashboard.get("panels", []), request.panels_count))
     
-    for panel in get_panels_to_optimize(panels, request.panels_count):
-        process_panel(panel, variables, optimizations, request.time_range)
-            
+    logger.info(f"Processing {len(panels_to_optimize)} panels in parallel...")
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        # Create a list of future objects
+        futures = [
+            executor.submit(process_panel, panel, variables, request.time_range)
+            for panel in panels_to_optimize
+        ]
+        
+        # Wait for all futures to complete and collect results
+        for future in futures:
+            try:
+                panel_results = future.result()
+                optimizations.extend(panel_results)
+            except Exception as e:
+                logger.error(f"Error processing panel in parallel: {e}")
+    
     logger.info(f"Computed {len(optimizations)} optimizations for dashboard '{dashboard_title}'.")
     return DashboardOptimizeResponse(
         dashboard_title=dashboard_title,
         dashboard_uid=request.dashboard_uid,
-        optimizations=optimizations
+        optimizations=optimizations,
+        dashboard_recommendations=dashboard_recommendations
     )
 
 # For running locally via Python:
